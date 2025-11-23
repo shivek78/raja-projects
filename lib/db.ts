@@ -1,15 +1,11 @@
 import mongoose from "mongoose";
 
-const MONGO_URL = process.env.MONGO_URL;
-
-if (!MONGO_URL) {
-  throw new Error("❌ Missing MONGO_URL in .env.local");
-}
-
-let isConnected = false;
+const MONGO_URL = process.env.MONGO_URL!;
 
 export async function connectDB() {
-  if (isConnected) return;
+  if (mongoose.connection.readyState === 1) {
+    return mongoose.connection;
+  }
 
   try {
     const conn = await mongoose.connect(MONGO_URL, {
@@ -17,10 +13,10 @@ export async function connectDB() {
       serverSelectionTimeoutMS: 10000,
     });
 
-    isConnected = conn.connections[0].readyState === 1;
     console.log("✅ MongoDB Connected");
-  } catch (error) {
-    console.error("❌ MongoDB connect error:", error);
-    throw error;
+    return conn;
+  } catch (err) {
+    console.error("❌ MongoDB connect error:", err);
+    throw err;
   }
 }

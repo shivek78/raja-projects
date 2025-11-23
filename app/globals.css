@@ -92,3 +92,15 @@ body {
     @apply bg-background text-foreground;
   }
 }
+/* ANIMATED EV GRADIENT */
+.ev-animated-bg {
+  background: linear-gradient(135deg, #0d1117, #1c2a2d, #062b28, #042b4b);
+  background-size: 400% 400%;
+  animation: evPulse 12s ease infinite;
+}
+
+@keyframes evPulse {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}

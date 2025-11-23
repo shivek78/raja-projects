@@ -1,16 +1,31 @@
 import { NextResponse } from "next/server";
-import { verifyJwt } from "@/lib/jwt"; // helper to verify token
+import { jwtVerify } from "jose";
 import User from "@/lib/models/User";
+import { connectDB } from "@/lib/db";
+
+const secretKey = new TextEncoder().encode(process.env.JWT_SECRET!);
+
 export async function GET(req: Request) {
   try {
-    const cookie = req.headers.get("cookie") || "";
-    // parse token (simple)
-    const token = cookie.split("token=")[1]?.split(";")[0];
-    if (!token) return NextResponse.json({ user: null });
-    const payload = await verifyJwt(token);
+    await connectDB();
+
+    const token = req.headers
+      .get("cookie")
+      ?.split("; ")
+      ?.find((x) => x.startsWith("token="))
+      ?.split("=")[1];
+
+    if (!token) {
+      return NextResponse.json({ user: null });
+    }
+
+    const { payload } = await jwtVerify(token, secretKey);
     const user = await User.findById(payload.id).lean();
+
+    if (!user) return NextResponse.json({ user: null });
+
     return NextResponse.json({ user });
-  } catch {
+  } catch (err) {
     return NextResponse.json({ user: null });
   }
 }

@@ -11,7 +11,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
 const MAP_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
-const BANNER_SRC = "/mnt/data/original-c90350566ad3daf3fef46f14a2802d6b.webp"; // uploaded file path
 
 export default function DashboardPage() {
   // base state
@@ -67,22 +66,21 @@ export default function DashboardPage() {
     fetchMe();
   }, []);
 
-  // persist theme pref to server
+  // persist theme pref to server (best-effort)
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
     if (!user) return;
-    // debounce / best-effort save
     const t = setTimeout(() => {
       fetch("/api/user/prefs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ theme: dark ? "dark" : "light" }),
-      }).catch(() => { });
+      }).catch(() => {});
     }, 600);
     return () => clearTimeout(t);
   }, [dark, user]);
 
-  // --- map init (keeps your logic)
+  // --- map init
   useEffect(() => {
     if (!mapContainer.current) return;
     if (!MAP_TOKEN) return;
@@ -105,13 +103,18 @@ export default function DashboardPage() {
     }
   }, [userLocation, stations]);
 
-  // --- helper skeletons (cluster + markers)
+  // helpers
   function clearMarkers() {
-    // remove all map markers (keeps minimal)
-    const map = mapInstance.current;
-    if (!map) return;
-    // We'll remove all DOM markers created by us by selecting class
     document.querySelectorAll(".ev-marker").forEach((el) => el.remove());
+  }
+  function clusterStations(list: any[]) {
+    const groups: Record<string, any> = {};
+    list.forEach((s) => {
+      const key = `${Number(s.lat).toFixed(2)}-${Number(s.lng).toFixed(2)}`;
+      groups[key] ??= { lat: s.lat, lng: s.lng, stations: [] };
+      groups[key].stations.push(s);
+    });
+    return Object.values(groups).map((g) => ({ ...g, count: g.stations.length }));
   }
   function updateMapMarkers(stationsList: any[], centerLocation: any) {
     if (!mapInstance.current) return;
@@ -126,14 +129,15 @@ export default function DashboardPage() {
       el.style.display = "flex";
       el.style.alignItems = "center";
       el.style.justifyContent = "center";
-      el.style.color = "#fff";
-      el.style.background = c.count > 1 ? "linear-gradient(135deg,#6366f1,#22c55e)" : "#06b6d4";
-      el.style.boxShadow = "0 6px 18px rgba(2,6,23,0.25)";
+      el.style.color = "#1d1919ff";
+      el.style.background = c.count > 1 ? "linear-gradient(135deg,#6366f1,#22c55e)" : "#1a2144ff";
+      el.style.boxShadow = "0 6px 18px rgba(26, 31, 49, 0.25)";
       if (c.count > 1) el.textContent = String(c.count);
 
       new mapboxgl.Marker(el).setLngLat([c.lng, c.lat]).addTo(mapInstance.current!);
       el.addEventListener("click", () => {
-        if (c.count > 1) mapInstance.current!.easeTo({ center: [c.lng, c.lat], zoom: mapInstance.current!.getZoom() + 2 });
+        if (c.count > 1)
+          mapInstance.current!.easeTo({ center: [c.lng, c.lat], zoom: mapInstance.current!.getZoom() + 2 });
         else {
           const s = c.stations[0];
           const elItem = document.getElementById(`station-${s.id}`);
@@ -152,22 +156,15 @@ export default function DashboardPage() {
       new mapboxgl.Marker(userEl).setLngLat([centerLocation.lng, centerLocation.lat]).addTo(mapInstance.current!);
     }
   }
-  function clusterStations(list: any[]) {
-    const groups: Record<string, any> = {};
-    list.forEach((s) => {
-      const key = `${Number(s.lat).toFixed(2)}-${Number(s.lng).toFixed(2)}`;
-      groups[key] ??= { lat: s.lat, lng: s.lng, stations: [] };
-      groups[key].stations.push(s);
-    });
-    return Object.values(groups).map((g) => ({ ...g, count: g.stations.length }));
-  }
 
-  // --- main search + analysis (original behavior)
+  // --- main search + analysis
   async function findStationsAndAnalyze(location: any, distanceArg: any) {
     setError("");
     setLoading(true);
     try {
-      const stationsResponse = await fetch(`/api/stations?lat=${location.lat}&lng=${location.lng}&distance=${distanceArg || 25}`);
+      const stationsResponse = await fetch(
+        `/api/stations?lat=${location.lat}&lng=${location.lng}&distance=${distanceArg || 25}`
+      );
       if (!stationsResponse.ok) throw new Error(await stationsResponse.text());
       const stationsData = await stationsResponse.json();
       setStations(stationsData.stations || []);
@@ -194,33 +191,57 @@ export default function DashboardPage() {
   async function getCurrentLocation() {
     try {
       setLoading(true);
-      const pos = await new Promise<GeolocationPosition>((res, rej) =>
-        navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 10000 })
-      );
-      const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      setError("");
+
+      const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 0,
+        });
+      });
+
+      const loc = {
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+      };
+
       setUserLocation(loc);
-      await findStationsAndAnalyze(loc, distance);
-    } catch {
-      setError("Could not get location");
+      await findStationsAndAnalyze(loc, Number(distance));
+    } catch (err: any) {
+      console.error("Geolocation Error:", err);
+
+      // GeolocationPositionError codes:
+      // 1 = PERMISSION_DENIED, 2 = POSITION_UNAVAILABLE, 3 = TIMEOUT
+      if (err?.code === 1) setError("Location permission denied.");
+      else if (err?.code === 2) setError("Location unavailable.");
+      else if (err?.code === 3) setError("Location request timed out.");
+      else setError("Could not get location");
     } finally {
       setLoading(false);
     }
   }
+
   async function searchByAddress() {
     if (!address.trim()) {
       setError("Enter address");
       return;
     }
     setLoading(true);
+    setError("");
     try {
       const res = await fetch(`/api/geocode?address=${encodeURIComponent(address)}`);
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "Geocode failed");
+        throw new Error(txt || "Geocode failed");
+      }
       const body = await res.json();
       if (body.error) throw new Error(body.error || "Geocode failed");
       const loc = { lat: body.lat, lng: body.lng };
       setUserLocation(loc);
-      await findStationsAndAnalyze(loc, distance);
+      await findStationsAndAnalyze(loc, Number(distance));
     } catch (e: any) {
-      setError(e.message);
+      setError(e?.message || "Geocode failed");
     } finally {
       setLoading(false);
     }
@@ -247,40 +268,33 @@ export default function DashboardPage() {
     }
   }
 
+  // --- open directions helper
+  function openDirections(s: any) {
+    if (s.lat && s.lng) {
+      const url = `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`;
+      window.open(url, "_blank");
+    } else if (s.address) {
+      const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s.address)}`;
+      window.open(url, "_blank");
+    } else {
+      alert("No location available for this station");
+    }
+  }
 
   // --- logout
   async function logout() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    window.location.href = "/login";
-  }
-
-  // --- trip planner trigger (basic)
-  async function planTrip(start: string, destination: string) {
     try {
-      const res = await fetch("/api/trip/plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          start,
-          destination,
-          batteryCapacityKwh,
-          currentSoC,
-          consumptionWhPerKm: consumptionWhPerKm,
-          targetSoC,
-        }),
-      });
-      const json = await res.json();
-      if (json.error) alert(json.error);
-      else {
-        // show actions / markers (app-specific)
-        setAlgorithmResults(json);
-        if (json.stops?.length && json.stops[0]) {
-          const loc = { lat: json.stops[0].lat, lng: json.stops[0].lng };
-          setUserLocation(loc);
-        }
+      const res = await fetch("/api/auth/logout", { method: "POST" });
+      // If logout endpoint returns OK, redirect. If not, still try to redirect but warn.
+      if (res.ok) {
+        window.location.href = "/login";
+      } else {
+        console.warn("Logout response not OK:", await res.text());
+        window.location.href = "/login";
       }
     } catch (e) {
-      console.error(e);
+      console.error("Logout error:", e);
+      window.location.href = "/login";
     }
   }
 
@@ -290,12 +304,14 @@ export default function DashboardPage() {
     const id = setInterval(async () => {
       if (!userLocation) return;
       try {
-        const res = await fetch(`/api/stations?lat=${userLocation.lat}&lng=${userLocation.lng}&distance=${distance || 25}`);
+        const res = await fetch(
+          `/api/stations?lat=${userLocation.lat}&lng=${userLocation.lng}&distance=${distance || 25}`
+        );
         if (res.ok) {
           const d = await res.json();
           setStations(d.stations || []);
         }
-      } catch { }
+      } catch {}
     }, 20000);
     return () => clearInterval(id);
   }, [pollingEnabled, userLocation, distance]);
@@ -307,90 +323,86 @@ export default function DashboardPage() {
     return (algorithmResults.explanation?.details || []).slice(0, 4).map((d: any) => ({ role: d.algorithm, text: d.reasoning }));
   }
 
-  // UI render
+  // UI render (root wrapper)
   return (
     <div className={`min-h-screen ${dark ? "bg-slate-900 text-slate-100" : "bg-gradient-to-br from-blue-600 via-teal-500 to-indigo-500 text-slate-900"}`}>
-      {/* Top header */}
-     <header className="w-full sticky top-0 z-40 backdrop-blur-xl bg-black/30 border-b border-white/10 shadow-lg">
-  <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
-
-    {/* Left: Logo + Title */}
-    <div className="flex items-center gap-3">
-      <img
-        src="/logo.png"
-        alt="logo"
-        className="w-11 h-11 rounded-xl object-cover shadow-lg"
-      />
-      <div className="text-xl font-semibold bg-gradient-to-r from-cyan-300 to-blue-400 text-transparent bg-clip-text">
-        AI Powered Charging System
-      </div>
-    </div>
-
-    {/* Center Search Bar */}
-    <div className="flex-1 flex items-center justify-center">
-      <div className="w-full max-w-2xl flex items-center gap-2">
-        <Input
-          placeholder="Search address"
-          value={address}
-          onChange={(e) => setAddress(e.target.value)}
-          className="bg-white/10 text-white placeholder-white/60 border-white/20"
-        />
-        <Input
-          placeholder="distance km"
-          className="w-28 bg-white/10 text-white placeholder-white/60 border-white/20"
-          value={distance}
-          onChange={(e) => setDistance(e.target.value)}
-        />
-        <Button
-          onClick={searchByAddress}
-          className="bg-gradient-to-r from-white -500 to-teal-400 text-black font-semibold shadow-lg hover:opacity-90"
-        >
-          Search
-        </Button>
-        <Button
-          onClick={getCurrentLocation}
-          variant="outline"
-          className="bg-gradient-to-r from-blue-500 to-teal-400 text-black font-semibold shadow-lg hover:opacity-90"
-        >
-          Use current
-        </Button>
-      </div>
-    </div>
-
-    {/* Right: User Info + Theme + Logout */}
-    <div className="flex items-center gap-4">
-
-      {/* Theme Switch */}
-      <button
-        onClick={() => setDark((d) => !d)}
-        className="px-3 py-1 rounded-md bg-white/10 text-white hover:bg-white/20 transition shadow-lg"
+      {/* Top header (glass) */}
+      <header
+        className={`w-full sticky top-0 z-40 backdrop-blur-xl border-b border-white/10 shadow-lg ${
+          dark ? "bg-black/30" : "bg-white/20"
+        }`}
       >
-        {dark ? "🌙" : "☀️"}
-      </button>
-
-      {/* User Profile */}
-      {userLoading ? (
-        <div className="w-9 h-9 rounded-full bg-white/20 animate-pulse" />
-      ) : user ? (
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-teal-400 flex items-center justify-center text-black font-bold shadow">
-            {user.name.slice(0, 1).toUpperCase()}
+        <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
+          {/* Left: Logo + Title */}
+          <div className="flex items-center gap-3">
+            <img src="/logo.png" alt="logo" className="w-11 h-11 rounded-xl object-cover shadow-lg" />
+            <div className="text-xl font-semibold bg-gradient-to-r from-cyan-300 to-blue-400 text-transparent bg-clip-text">
+              EV Station Finder
+            </div>
           </div>
 
-          <div className="text-md font-medium text-white/90">{user.name}</div>
+          {/* Center Search Bar */}
+          <div className="flex-1 flex items-center justify-center">
+            <div className="w-full max-w-2xl flex items-center gap-2">
+              <Input
+                placeholder="Search address"
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                className="bg-white/10 text-white placeholder-white/60 border-white/20"
+              />
+              <Input
+                placeholder="distance km"
+                className="w-28 bg-white/10 text-white placeholder-white/60 border-white/20"
+                value={distance}
+                onChange={(e) => setDistance(e.target.value)}
+              />
+              <Button onClick={searchByAddress} className="bg-gradient-to-r from-white to-teal-400 text-black font-semibold shadow-lg hover:opacity-90">
+                Search
+              </Button>
+              <Button onClick={getCurrentLocation} variant="outline" className="bg-gradient-to-r from-blue-500 to-teal-400 text-black font-semibold shadow-lg hover:opacity-90">
+                Use current
+              </Button>
+            </div>
+          </div>
 
+          {/* Right: User Info + Theme Toggle */}
+          <div className="flex items-center gap-4">
+            {/* Theme Switch */}
+            <button onClick={() => setDark((d) => !d)} className="px-3 py-1 rounded-md bg-white/10 text-white hover:bg-white/20 transition shadow-lg">
+              {dark ? "🌙" : "☀️"}
+            </button>
 
+            {/* User Profile */}
+            {userLoading ? (
+              <div className="w-9 h-9 rounded-full bg-white/20 animate-pulse" />
+            ) : user ? (
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-teal-400 flex items-center justify-center text-black font-bold shadow">
+                  {user.name?.slice(0, 1).toUpperCase()}
+                </div>
+                <div className="text-md font-medium text-white/90">{user.name}</div>
 
+                <Button onClick={logout} className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg shadow">
+                  Logout
+                </Button>
+              </div>
+            ) : (
+              <a href="/login" className="bg-teal-500 px-4 py-1 rounded-lg shadow text-white">
+                Login
+              </a>
+            )}
+          </div>
         </div>
-      ) : (
-        <a href="/login" className="bg-red-600 hover:bg-red-700 text-white px-4 py-1 rounded-lg shadow-lg"><button>Logout</button></a>
-      )}
-    </div>
-  </div>
-</header>
+      </header>
 
+      {/* Banner video */}
+      <div className="max-w-7xl mx-auto px-6 mt-6">
+        <div className="rounded-2xl overflow-hidden shadow-2xl border border-white/10">
+          <video src="/dashboard-banner.mp4" autoPlay loop muted playsInline className="w-full h-[260px] object-cover" />
+        </div>
+      </div>
 
-
+      {/* Main content */}
       <main className="max-w-7xl mx-auto px-6 py-6 grid grid-cols-1 md:grid-cols-5 gap-6">
         {/* Map left */}
         <section className="md:col-span-3 space-y-4">
@@ -405,15 +417,19 @@ export default function DashboardPage() {
             <div className="h-full" ref={mapContainer} />
           </motion.div>
 
-          {/* Nearby stations full width under map */}
+          {/* Nearby stations */}
           <section>
             <h2 className="text-white text-lg font-semibold mb-3">📋 Nearby Stations ({stations.length})</h2>
+            <div className="w-full rounded-2xl overflow-hidden mb-4 border border-white/10 shadow-lg">
+              <video src="/nearby-stations.mp4" autoPlay loop muted playsInline className="w-full h-40 object-cover" />
+            </div>
+
             <div className="grid gap-3">
               {stations.length === 0 && <div className="text-white/80">No stations — search a location to load stations.</div>}
               {stations.map((s: any, i: number) => {
                 const inFav = favorites.includes(s.id);
                 return (
-                  <motion.div key={s.id ?? i} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className={`p-3 rounded-xl border ${s.isBest ? "border-green-400 bg-green-50/10" : "border-white/10"} flex justify-between items-start`}>
+                  <motion.div id={`station-${s.id ?? i}`} key={s.id ?? i} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className={`p-3 rounded-xl border ${s.isBest ? "border-green-400 bg-green-50/10" : "border-white/10"} flex justify-between items-start`}>
                     <div>
                       <div className="text-white font-semibold flex items-center gap-3">{s.name}
                         <button onClick={() => toggleFavorite(s.id)} className="ml-2 text-sm">{inFav ? "❤️" : "🤍"}</button>
@@ -485,7 +501,6 @@ export default function DashboardPage() {
       <footer className="py-4 text-center text-white/60">
         Made by Raju Kumar Sahani
       </footer>
-
 
       {/* ai modal */}
       {aiModalOpen && algorithmResults && (
